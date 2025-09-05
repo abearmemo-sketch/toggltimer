@@ -6,12 +6,12 @@
 <title>Toggl 計時器與 Notion 更新</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-    body { font-family: 'Inter', sans-serif; background-color: rgba(0,0,0,0.05); color: #666666; }
-    #timer { font-family: 'Roboto Mono', monospace; font-size: 2rem; }
-    input { background-color: #f0f0f0; color: #666666; cursor: pointer; border: 1px solid #ccc; padding: 0.5rem; border-radius: 0.25rem; }
-    input:focus { outline: none; }
-    button { background-color: #999999; color: #ffffff; padding: 0.5rem 1rem; border-radius: 0.25rem; }
-    button:hover { background-color: #777777; }
+body { font-family: 'Inter', sans-serif; background-color: rgba(0,0,0,0.05); color: #666; }
+#timer { font-family: 'Roboto Mono', monospace; font-size: 2rem; }
+input { background-color: #f0f0f0; color: #666; cursor: pointer; border: 1px solid #ccc; padding: 0.5rem; border-radius: 0.25rem; }
+input:focus { outline: none; }
+button { background-color: #999; color: #fff; padding: 0.5rem 1rem; border-radius: 0.25rem; }
+button:hover { background-color: #777; }
 </style>
 </head>
 <body class="flex items-center justify-center min-h-screen p-4">
@@ -29,8 +29,10 @@
 </div>
 
 <script>
-const TOGGL_API = "/api/TTTT";     // Toggl Proxy
-const SAVE_API = "/api/saveEntry"; // Serverless 暫存
+const TOGGL_API = "/api/TTTT";
+const SAVE_API = "/api/saveEntry";
+const NOTION_PUSH_API = "/api/notionPush";
+
 const startTimeInput = document.getElementById("start-time");
 const taskDescInput = document.getElementById("task-desc");
 const timerDiv = document.getElementById("timer");
@@ -40,52 +42,50 @@ const statusDiv = document.getElementById("status");
 let startTime = null;
 let intervalId = null;
 
-// 格式化 Notion 時間
-function formatTime(dateStr) {
+// 格式化 Notion ISO 8601
+function formatToISO(dateStr) {
     if (!dateStr) return "";
-    const date = new Date(dateStr);
-    const pad = (num) => String(num).padStart(2,'0');
-    return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const d = new Date(dateStr);
+    return d.toISOString();
 }
 
-function pad(num) { return String(num).padStart(2,'0'); }
-
+// 計時器更新
+function pad(num){ return String(num).padStart(2,'0'); }
 function updateTimer() {
     if (!startTime) return;
-    const now = new Date();
-    const diff = Math.floor((now - startTime) / 1000);
-    const hours = pad(Math.floor(diff / 3600));
-    const minutes = pad(Math.floor((diff % 3600) / 60));
-    const seconds = pad(diff % 60);
+    const diff = Math.floor((new Date() - startTime)/1000);
+    const hours = pad(Math.floor(diff/3600));
+    const minutes = pad(Math.floor((diff%3600)/60));
+    const seconds = pad(diff%60);
     timerDiv.textContent = `${hours}:${minutes}:${seconds}`;
 }
 
 // 點擊欄位複製
-function copyToClipboard(inputEl) {
+function copyToClipboard(inputEl){
     inputEl.select();
-    inputEl.setSelectionRange(0, 99999);
-    navigator.clipboard.writeText(inputEl.value).then(() => {
+    inputEl.setSelectionRange(0,99999);
+    navigator.clipboard.writeText(inputEl.value).then(()=>{
         const orig = inputEl.title;
         inputEl.title = "已複製!";
-        setTimeout(() => inputEl.title = orig, 1000);
+        setTimeout(()=> inputEl.title = orig, 1000);
     });
 }
-startTimeInput.addEventListener("click", () => copyToClipboard(startTimeInput));
-taskDescInput.addEventListener("click", () => copyToClipboard(taskDescInput));
+startTimeInput.addEventListener("click",()=>copyToClipboard(startTimeInput));
+taskDescInput.addEventListener("click",()=>copyToClipboard(taskDescInput));
 
-// 讀取暫存資料
-async function loadSavedEntry() {
+// 載入暫存資料
+async function loadSavedEntry(){
     statusDiv.textContent = "載入暫存資料...";
-    try {
+    try{
         const res = await fetch(SAVE_API);
         const data = await res.json();
-        if (data.start && data.description) {
+        if(data.start && data.description){
             startTimeInput.value = data.start;
             taskDescInput.value = data.description;
-            startTime = new Date(data.start.replace(' ', 'T'));
-            if (intervalId) clearInterval(intervalId);
+            startTime = new Date(data.start.replace(' ','T'));
+            if(intervalId) clearInterval(intervalId);
             updateTimer();
-            intervalId = setInterval(updateTimer, 1000);
+            intervalId = setInterval(updateTimer,1000);
             statusDiv.textContent = "已載入暫存資料";
         } else {
             startTimeInput.value = "";
@@ -94,59 +94,58 @@ async function loadSavedEntry() {
             startTime = null;
             statusDiv.textContent = "尚無暫存資料";
         }
-    } catch(err) {
+    }catch(err){
         console.error(err);
         statusDiv.textContent = "讀取暫存資料失敗";
     }
 }
 
-// 抓 Toggl 並更新暫存 + Notion
-async function fetchTimeEntry() {
-    statusDiv.textContent = "更新中...";
-    try {
+// 更新按鈕事件
+updateBtn.addEventListener("click", async()=>{
+    statusDiv.textContent = "抓取 Toggl...";
+    try{
         const res = await fetch(TOGGL_API);
         const data = await res.json();
-        if (data.current_timer && data.current_timer.id) {
-            const entry = {
-                start: formatTime(data.current_timer.start),
-                description: data.current_timer.description || "（無描述）"
-            };
-            startTimeInput.value = entry.start;
-            taskDescInput.value = entry.description;
+
+        if(data.current_timer && data.current_timer.id){
+            const desc = data.current_timer.description || "（無描述）";
+            const startISO = formatToISO(data.current_timer.start);
+
+            // 更新前端
+            startTimeInput.value = data.current_timer.start.replace('T',' ').split('.')[0];
+            taskDescInput.value = desc;
             startTime = new Date(data.current_timer.start);
 
-            // POST 暫存資料
-            await fetch(SAVE_API, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(entry)
-            });
-
-            // POST 到 Notion
-            await fetch("/api/notionPush", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(entry)
-            });
-
-            if (intervalId) clearInterval(intervalId);
+            if(intervalId) clearInterval(intervalId);
             updateTimer();
-            intervalId = setInterval(updateTimer, 1000);
-            statusDiv.textContent = "已更新 Toggl & Notion 資料";
-        } else {
-            startTimeInput.value = "";
-            taskDescInput.value = "";
-            timerDiv.textContent = "00:00:00";
-            startTime = null;
+            intervalId = setInterval(updateTimer,1000);
+
+            // POST 暫存資料
+            await fetch(SAVE_API,{
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({start:startTimeInput.value, description:desc})
+            });
+
+            // 同步到 Notion
+            statusDiv.textContent = "更新 Notion...";
+            await fetch(NOTION_PUSH_API,{
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({start:startISO, description:desc})
+            });
+            statusDiv.textContent = "已更新 Toggl、暫存資料與 Notion";
+
+        }else{
             statusDiv.textContent = "目前沒有計時中項目";
         }
-    } catch(err) {
+    }catch(err){
         console.error(err);
         statusDiv.textContent = "抓取失敗，請檢查網路或 API";
     }
-}
+});
 
-updateBtn.addEventListener("click", fetchTimeEntry);
+// 載入頁面時先抓暫存資料
 window.onload = loadSavedEntry;
 </script>
 
